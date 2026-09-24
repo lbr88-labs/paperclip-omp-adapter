@@ -176,6 +176,10 @@ if (prompt.includes("BOOTSTRAP_FAIL")) {
   process.exit(1);
 }
 if (!noSession) console.log(JSON.stringify({ type: "session", id: sessionId }));
+if (prompt.includes("ABRUPT_THINKING")) {
+  console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "last thought before the process stops" } }));
+  process.exit(0);
+}
 for (let thought = 0; thought < 12; thought += 1) {
   console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "step " + thought + " weighing the adapter contract against the durable run events panel; " } }));
 }
@@ -482,6 +486,70 @@ assert.ok(
   runEvents.indexOf(thinkingEvents[0]) < runEvents.findIndex((event) => event.eventType === "omp.tool"),
   "thinking must be published before the tool call that ended it",
 );
+
+// Regression test 10b: a stream that stops right after thinking still publishes the segment
+const abruptEvents = [];
+await adapter.execute({
+  runId: "00000000-0000-4000-8000-000000000018",
+  agent,
+  runtime: emptyRuntime,
+  config: { command: fakeOmp, cwd: executionCwd, noSession: true, promptTemplate: "{{context.expected}}" },
+  context: { expected: "ABRUPT_THINKING" },
+  onLog: async () => {},
+  onMeta: async () => {},
+  onEvent: async (event) => { abruptEvents.push(event); },
+});
+const abruptThinking = abruptEvents.filter((event) => event.eventType === "omp.thinking");
+assert.equal(abruptThinking.length, 1, "a stream ending after thinking_delta must still publish its segment");
+assert.equal(abruptThinking[0].message, "last thought before the process stops");
+
+// Regression test 10c: one delta larger than the thinking buffer is cut at the buffer, not after it
+const oversizedEvents = [];
+const oversizedReporter = createOmpProgressReporter(undefined, async (event) => { oversizedEvents.push(event); });
+await oversizedReporter.ingest(JSON.stringify({
+  type: "message_update",
+  assistantMessageEvent: { type: "thinking_delta", delta: "x".repeat(20) + " ".repeat(4000) + "y".repeat(100) },
+}));
+await oversizedReporter.flush();
+assert.equal(oversizedEvents.length, 1, "an oversized delta must publish exactly one thinking event");
+assert.equal(
+  oversizedEvents[0].message,
+  "x".repeat(20) + "\u2026",
+  "content past THINKING_BUFFER_CHARS must never reach the published segment",
+);
+
+// Regression test 10d: live snippets keep the spaces that separate deltas
+const snippetUpdates = [];
+const snippetReporter = createOmpProgressReporter(async (update) => { snippetUpdates.push(update); }, undefined);
+for (const delta of ["weighing ", "the ", "contract"]) {
+  await snippetReporter.ingest(JSON.stringify({
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_delta", delta },
+  }));
+}
+await snippetReporter.ingest(JSON.stringify({
+  type: "tool_execution_start",
+  toolCallId: "snippet-1",
+  toolName: "bash",
+  args: { command: "true" },
+}));
+assert.equal(snippetUpdates.at(-1).lastAssistantSnippet, "Thinking: weighing the contract");
+
+const textUpdates = [];
+const textReporter = createOmpProgressReporter(async (update) => { textUpdates.push(update); }, undefined);
+for (const delta of ["weighing ", "the ", "contract"]) {
+  await textReporter.ingest(JSON.stringify({
+    type: "message_update",
+    assistantMessageEvent: { type: "text_delta", delta },
+  }));
+}
+await textReporter.ingest(JSON.stringify({
+  type: "tool_execution_start",
+  toolCallId: "snippet-2",
+  toolName: "bash",
+  args: { command: "true" },
+}));
+assert.equal(textUpdates.at(-1).lastAssistantSnippet, "weighing the contract");
 
 const cappedEvents = [];
 const cappedReporter = createOmpProgressReporter(undefined, async (event) => { cappedEvents.push(event); });

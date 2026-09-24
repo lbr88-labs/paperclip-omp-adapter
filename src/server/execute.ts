@@ -766,6 +766,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       if (stdoutBuffer) await queueLog("stdout", stdoutBuffer);
       await logQueue;
+      try {
+        await reporter.flush();
+      } catch {
+        reporterFailed = true;
+      }
       return {
         proc,
         parsed: parseOmpJsonl(proc.stdout),

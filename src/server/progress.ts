@@ -9,6 +9,7 @@ const SNIPPET_CHARS = 200;
 const HINT_CHARS = 120;
 const THINKING_CHARS = 500;
 const THINKING_BUFFER_CHARS = 4000;
+const SNIPPET_BUFFER_CHARS = 1000;
 const MAX_TOOL_EVENTS = 200;
 const MAX_THINKING_EVENTS = 40;
 
@@ -63,6 +64,8 @@ function seconds(elapsedMs: number): string {
 
 export interface OmpStreamReporter {
   ingest(line: string): Promise<void>;
+  /** Publish the thinking segment left buffered when the stream ends without a closing event. */
+  flush(): Promise<void>;
   /** Tool calls that started and never reported an end. */
   pendingToolCount(): number;
   /** True once OMP emitted assistant output or a tool call. */
@@ -183,16 +186,17 @@ export function createOmpProgressReporter(
         providerWorkSeen = true;
         if (text(update.type) === "text_delta") {
           await flushThinking();
-          streamedText = snippetOf(streamedText + delta);
-          lastAssistantSnippet = streamedText;
+          streamedText = (streamedText + delta).slice(-SNIPPET_BUFFER_CHARS);
+          lastAssistantSnippet = snippetOf(streamedText);
           await emit("Writing response", false);
           return;
         }
         if (text(update.type) === "thinking_delta") {
-          if (thinkingSegment.length < THINKING_BUFFER_CHARS) thinkingSegment += delta;
-          else thinkingDropped = true;
-          streamedThinking = snippetOf(streamedThinking + delta);
-          lastAssistantSnippet = `Thinking: ${streamedThinking}`;
+          const merged = thinkingSegment + delta;
+          thinkingSegment = merged.slice(0, THINKING_BUFFER_CHARS);
+          if (merged.length > THINKING_BUFFER_CHARS) thinkingDropped = true;
+          streamedThinking = (streamedThinking + delta).slice(-SNIPPET_BUFFER_CHARS);
+          lastAssistantSnippet = `Thinking: ${snippetOf(streamedThinking)}`;
           await emit("Thinking", false);
         }
         return;
@@ -202,11 +206,12 @@ export function createOmpProgressReporter(
         await flushThinking();
         const message = record(event.message);
         if (!message || message.role !== "assistant") return;
-        const body = snippetOf(assistantText(message.content));
-        if (!body) return;
-        streamedText = body;
+        const body = assistantText(message.content);
+        const snippet = snippetOf(body);
+        if (!snippet) return;
+        streamedText = body.slice(-SNIPPET_BUFFER_CHARS);
         streamedThinking = "";
-        lastAssistantSnippet = body;
+        lastAssistantSnippet = snippet;
         await emit("Writing response", true);
         return;
       }
@@ -217,6 +222,7 @@ export function createOmpProgressReporter(
 
   return {
     ingest,
+    flush: flushThinking,
     pendingToolCount: () => pendingTools.size,
     sawProviderWork: () => providerWorkSeen,
   };
