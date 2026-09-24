@@ -1,6 +1,6 @@
 {
   "name": "@zhafron/paperclip-omp-adapter",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "External Paperclip adapter for the Oh My Pi coding-agent CLI",
   "type": "module",
   "license": "MIT",
