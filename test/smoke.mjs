@@ -12,6 +12,7 @@ import {
 } from "../dist/server/execute.js";
 import { classifyOmpFailure } from "../dist/server/failure.js";
 import { parseOmpJsonl } from "../dist/server/parse.js";
+import { createOmpProgressReporter } from "../dist/server/progress.js";
 import { getOmpQuotaWindows } from "../dist/server/quota.js";
 import { resolveOmpProfile } from "../dist/server/profile.js";
 
@@ -175,6 +176,9 @@ if (prompt.includes("BOOTSTRAP_FAIL")) {
   process.exit(1);
 }
 if (!noSession) console.log(JSON.stringify({ type: "session", id: sessionId }));
+for (let thought = 0; thought < 12; thought += 1) {
+  console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "step " + thought + " weighing the adapter contract against the durable run events panel; " } }));
+}
 console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "fake-call-1", toolName: "bash", args: { command: "true" } }));
 console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "fake-call-1", toolName: "bash", result: { content: [{ type: "text", text: "ok" }] }, isError: false }));
 console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "fake-call-2", toolName: "fabric_exec", args: { code: "return 1;" }, intent: "Inspecting adapter and Paperclip install" }));
@@ -466,6 +470,55 @@ assert.match(
   intentEvent.message,
   /^fabric_exec ok in \d+\.\ds \u2014 Inspecting adapter and Paperclip install$/,
 );
+
+const thinkingEvents = runEvents.filter((event) => event.eventType === "omp.thinking");
+assert.equal(thinkingEvents.length, 1, "one finished thinking segment must publish exactly one omp.thinking event");
+assert.equal(thinkingEvents[0].stream, "system");
+assert.equal(thinkingEvents[0].level, "info");
+assert.match(thinkingEvents[0].message, /^step 0 weighing the adapter contract/);
+assert.equal(thinkingEvents[0].message.length, 501);
+assert.ok(thinkingEvents[0].message.endsWith("\u2026"), "a long thinking segment must be cut with an ellipsis");
+assert.ok(
+  runEvents.indexOf(thinkingEvents[0]) < runEvents.findIndex((event) => event.eventType === "omp.tool"),
+  "thinking must be published before the tool call that ended it",
+);
+
+const cappedEvents = [];
+const cappedReporter = createOmpProgressReporter(undefined, async (event) => { cappedEvents.push(event); });
+for (let segment = 0; segment < 60; segment += 1) {
+  await cappedReporter.ingest(JSON.stringify({
+    type: "message_update",
+    assistantMessageEvent: { type: "thinking_delta", delta: "reasoning segment " + segment + " " },
+  }));
+  await cappedReporter.ingest(JSON.stringify({
+    type: "tool_execution_start",
+    toolCallId: "cap-" + segment,
+    toolName: "bash",
+    args: { command: "true" },
+  }));
+}
+const cappedThinking = cappedEvents.filter((event) => event.eventType === "omp.thinking");
+const capNotices = cappedThinking.filter((event) => event.message.startsWith("Thinking event limit reached"));
+assert.equal(capNotices.length, 1, "the thinking cap notice must be published exactly once");
+assert.equal(cappedThinking.length, 41, "40 thinking segments plus one cap notice");
+assert.equal(cappedThinking.at(-1), capNotices[0]);
+for (const event of cappedThinking) assert.ok(event.message.length <= 501, "thinking event content must stay capped");
+
+let brokenSinkCalls = 0;
+const brokenReporter = createOmpProgressReporter(undefined, async () => {
+  brokenSinkCalls += 1;
+  throw new Error("sink down");
+});
+await brokenReporter.ingest(JSON.stringify({
+  type: "message_update",
+  assistantMessageEvent: { type: "thinking_delta", delta: "unreported reasoning" },
+}));
+await brokenReporter.ingest(JSON.stringify({ type: "turn_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }));
+for (let i = 0; i < 5; i += 1) {
+  await brokenReporter.ingest(JSON.stringify({ type: "tool_execution_end", toolCallId: "broken-" + i, toolName: "bash", isError: false }));
+}
+assert.equal(brokenSinkCalls, 1, "a failed sink must never be called again");
+assert.equal(brokenReporter.sawProviderWork(), true);
 
 // Regression test 11: OMP failures map onto Paperclip's retry vocabulary
 const quotaFailure = classifyOmpFailure({

@@ -18,8 +18,8 @@ This adapter integrates OMP into Paperclip as an external adapter module (`omp_l
 | Execution Mode | Headless execution per heartbeat run | `omp --mode json -p` |
 | Session Resume | Resumes conversation across runs | `--session-dir <dir> --resume <id>` |
 | Multi-Workspace | Multi-workspace context synchronization | `--add-dir <path>` (repeatable) |
-| Thinking / Reasoning | Live transcript streaming | `--thinking <level>`, `--print-thoughts` |
-| Tool Events | Real-time tool calls and progress updates | Maps `tool_execution_*` to Paperclip entries |
+| Thinking / Reasoning | Live transcript streaming plus durable `omp.thinking` run events | `--thinking <level>`, `--print-thoughts` |
+| Tool Events | Real-time tool calls, progress updates, durable `omp.tool` run events | Maps `tool_execution_*` to Paperclip entries |
 | Skills Integration | Paperclip workspace skills synchronization | Links skills into `~/.omp/agent/skills` |
 | Cancellation | Host-driven run abortion | Listens to `ctx.signal` and signals process group |
 | Targets | Local and remote execution | Direct spawn, SSH, or managed sandboxes |

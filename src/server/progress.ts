@@ -7,7 +7,10 @@ type EventSink = NonNullable<AdapterExecutionContext["onEvent"]>;
 const PROGRESS_MIN_INTERVAL_MS = 1000;
 const SNIPPET_CHARS = 200;
 const HINT_CHARS = 120;
+const THINKING_CHARS = 500;
+const THINKING_BUFFER_CHARS = 4000;
 const MAX_TOOL_EVENTS = 200;
+const MAX_THINKING_EVENTS = 40;
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
@@ -77,7 +80,11 @@ export function createOmpProgressReporter(
   let lastAssistantSnippet: string | null = null;
   let streamedText = "";
   let streamedThinking = "";
+  let thinkingSegment = "";
+  let thinkingDropped = false;
   let toolEventCount = 0;
+  let thinkingEventCount = 0;
+  let eventsBroken = false;
   let providerWorkSeen = false;
   const pendingTools = new Map<string, { toolName: string; hint: string; startedMs: number }>();
 
@@ -100,11 +107,11 @@ export function createOmpProgressReporter(
   };
 
   const publish = async (eventType: string, message: string, failed: boolean): Promise<void> => {
-    if (!events) return;
+    if (!events || eventsBroken) return;
     try {
       await events({ eventType, stream: "system", level: failed ? "error" : "info", message });
     } catch {
-      toolEventCount = MAX_TOOL_EVENTS + 1;
+      eventsBroken = true;
     }
   };
 
@@ -116,6 +123,22 @@ export function createOmpProgressReporter(
       return;
     }
     await publish("omp.tool", message, failed);
+  };
+
+  const flushThinking = async (): Promise<void> => {
+    const body = collapse(thinkingSegment);
+    const dropped = thinkingDropped;
+    thinkingSegment = "";
+    thinkingDropped = false;
+    if (!body) return;
+    if (thinkingEventCount > MAX_THINKING_EVENTS) return;
+    thinkingEventCount += 1;
+    if (thinkingEventCount > MAX_THINKING_EVENTS) {
+      await publish("omp.thinking", `Thinking event limit reached after ${MAX_THINKING_EVENTS} segments; later reasoning stays in the run log.`, false);
+      return;
+    }
+    const cut = dropped || body.length > THINKING_CHARS;
+    await publish("omp.thinking", cut ? `${body.slice(0, THINKING_CHARS)}…` : body, false);
   };
 
   const ingest = async (line: string): Promise<void> => {
@@ -132,6 +155,7 @@ export function createOmpProgressReporter(
         currentToolName = toolName;
         providerWorkSeen = true;
         streamedText = "";
+        await flushThinking();
         await emit(`Running ${toolName}`, true);
         return;
       }
@@ -158,12 +182,15 @@ export function createOmpProgressReporter(
         if (!delta) return;
         providerWorkSeen = true;
         if (text(update.type) === "text_delta") {
+          await flushThinking();
           streamedText = snippetOf(streamedText + delta);
           lastAssistantSnippet = streamedText;
           await emit("Writing response", false);
           return;
         }
         if (text(update.type) === "thinking_delta") {
+          if (thinkingSegment.length < THINKING_BUFFER_CHARS) thinkingSegment += delta;
+          else thinkingDropped = true;
           streamedThinking = snippetOf(streamedThinking + delta);
           lastAssistantSnippet = `Thinking: ${streamedThinking}`;
           await emit("Thinking", false);
@@ -172,6 +199,7 @@ export function createOmpProgressReporter(
       }
       case "message_end":
       case "turn_end": {
+        await flushThinking();
         const message = record(event.message);
         if (!message || message.role !== "assistant") return;
         const body = snippetOf(assistantText(message.content));
