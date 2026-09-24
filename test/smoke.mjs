@@ -180,6 +180,42 @@ if (prompt.includes("ABRUPT_THINKING")) {
   console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "last thought before the process stops" } }));
   process.exit(0);
 }
+if (prompt.includes("HUGE_LOG")) {
+  const earlyMessage = {
+    id: "huge-early",
+    role: "assistant",
+    provider: "fake-provider",
+    model: "fake-model",
+    content: [{ type: "text", text: "early turn before the truncation window" }],
+    stopReason: "stop",
+    usage: { input: 7, output: 3, cacheRead: 1, cost: { total: 0.002 } },
+  };
+  console.log(JSON.stringify({ type: "turn_end", message: earlyMessage }));
+  console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "huge-call-1", toolName: "bash", args: { command: "true" } }));
+  console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "huge-call-1", toolName: "bash", result: { content: [] }, isError: false }));
+  const filler = "f".repeat(4000);
+  for (let index = 0; index < 1400; index += 1) {
+    console.log(JSON.stringify({ type: "notice", text: filler + index }));
+  }
+  if (prompt.includes("HUGE_LOG_ABORT")) {
+    console.log(JSON.stringify({ type: "notice", text: "ABORT_MARKER" }));
+    setInterval(() => {}, 1000);
+  } else {
+    const lateMessage = {
+      id: "huge-late",
+      role: "assistant",
+      provider: "fake-provider",
+      model: "fake-model",
+      content: [{ type: "text", text: "HUGE_LOG_DONE" }],
+      stopReason: "stop",
+      usage: { input: 100, output: 20, cacheRead: 5, cost: { total: 0.01 } },
+    };
+    console.log(JSON.stringify({ type: "message_end", message: lateMessage }));
+    console.log(JSON.stringify({ type: "turn_end", message: lateMessage }));
+    await new Promise((resolve) => { process.stdout.write("", resolve); });
+    process.exit(0);
+  }
+}
 for (let thought = 0; thought < 12; thought += 1) {
   console.log(JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "step " + thought + " weighing the adapter contract against the durable run events panel; " } }));
 }
@@ -693,6 +729,49 @@ try {
 // Regression test 17: a successful run never claims interruption evidence
 assert.equal(fresh.executionRecovery, undefined);
 assert.equal(fresh.resultJson.executionCancellation, undefined);
+
+const hugeLogConfig = { ...baseConfig, timeoutSec: 120 };
+const huge = await run("00000000-0000-4000-8000-000000000019", emptyRuntime, "HUGE_LOG", hugeLogConfig);
+assert.ok(
+  huge.resultJson.stdout.length <= 4 * 1024 * 1024,
+  "the host caps captured stdout at 4 MiB, so this fixture must exceed the cap",
+);
+assert.ok(
+  !huge.resultJson.stdout.includes("fake-session-1"),
+  "the session header must fall outside the captured stdout window for this fixture",
+);
+assert.equal(huge.exitCode, 0, huge.errorMessage ?? "huge-log execution failed");
+assert.equal(huge.sessionId, "fake-session-1", "sessionId must come from the stream, not truncated stdout");
+assert.equal(huge.sessionParams?.sessionId, "fake-session-1", "sessionParams must survive a truncated stdout window");
+assert.deepEqual(
+  huge.usage,
+  { inputTokens: 107, outputTokens: 23, cachedInputTokens: 6 },
+  "usage must sum the turn before the truncation window and the turn after it",
+);
+assert.ok(Math.abs(huge.costUsd - 0.012) < 1e-9, "costUsd must include the turn dropped from captured stdout");
+assert.equal(huge.resultJson.toolCalls.length, 1, "tool calls before the truncation window must survive");
+
+const hugeAbortController = new AbortController();
+const hugeAborted = await adapter.execute({
+  runId: "00000000-0000-4000-8000-00000000001a",
+  agent,
+  runtime: emptyRuntime,
+  config: hugeLogConfig,
+  context: { expected: "HUGE_LOG_ABORT" },
+  onLog: async (stream, chunk) => {
+    if (stream === "stdout" && chunk.includes("ABORT_MARKER")) hugeAbortController.abort();
+  },
+  onMeta: async () => {},
+  signal: hugeAbortController.signal,
+});
+assert.equal(hugeAborted.sessionId, "fake-session-1", "an aborted huge run must still resolve its session");
+assert.deepEqual(hugeAborted.executionRecovery, {
+  kind: "interrupted",
+  providerStopped: true,
+  sessionPreserved: true,
+  actionOutcomes: "settled",
+});
+assert.deepEqual(hugeAborted.resultJson.executionCancellation, { state: "acknowledged" });
 
 await fs.rm(root, { recursive: true, force: true });
 console.log("adapter smoke passed");

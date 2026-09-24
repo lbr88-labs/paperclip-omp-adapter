@@ -63,7 +63,7 @@ function seconds(elapsedMs: number): string {
 }
 
 export interface OmpStreamReporter {
-  ingest(line: string): Promise<void>;
+  ingest(line: string, parsedEvent?: Record<string, unknown> | null): Promise<void>;
   /** Publish the thinking segment left buffered when the stream ends without a closing event. */
   flush(): Promise<void>;
   /** Tool calls that started and never reported an end. */
@@ -151,8 +151,8 @@ export function createOmpProgressReporter(
     await publish("omp.thinking", cut ? `${body.slice(0, THINKING_CHARS)}…` : body, false);
   };
 
-  const ingest = async (line: string): Promise<void> => {
-    const event = parseOmpJsonLine(line.trim());
+  const ingest = async (line: string, parsedEvent?: Record<string, unknown> | null): Promise<void> => {
+    const event = parsedEvent === undefined ? parseOmpJsonLine(line.trim()) : parsedEvent;
     if (!event) return;
 
     switch (text(event.type)) {

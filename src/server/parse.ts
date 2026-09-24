@@ -111,20 +111,14 @@ export function parseOmpJsonLine(line: string): JsonObject | null {
   return repaired === null ? null : parseJsonObject(repaired);
 }
 
-export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
-  const result: ParsedOmpOutput = {
-    sessionId: null,
-    messages: [],
-    finalMessage: null,
-    errors: [],
-    provider: null,
-    model: null,
-    usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 },
-    costUsd: 0,
-    toolCalls: [],
-    unknownLines: [],
-  };
+export interface OmpOutputAccumulator {
+  push(rawLine: string, event?: JsonObject | null): void;
+  result(): ParsedOmpOutput;
+}
+
+export function createOmpOutputAccumulator(): OmpOutputAccumulator {
   const toolCalls = new Map<string, ParsedOmpToolCall>();
+  const toolCallList: ParsedOmpToolCall[] = [];
   const messageTexts = new Map<string, string>();
   const messageUsage = new Map<string, UsageTotals>();
   const turnUsageKeys = new Set<string>();
@@ -133,6 +127,10 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
   let unknownDropped = 0;
   let unknownDroppedBytes = 0;
   let terminalError: string | null = null;
+  let sessionId: string | null = null;
+  let provider: string | null = null;
+  let model: string | null = null;
+  let finalMessage: string | null = null;
 
   const recordUnknown = (line: string): void => {
     if (unknownKept.length < UNKNOWN_LINE_LIMIT) {
@@ -150,14 +148,14 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
   const readAssistant = (value: unknown, collectMessage: boolean): JsonObject | null => {
     const message = object(value);
     if (!message || message.role !== "assistant") return null;
-    const provider = string(message.provider).trim();
-    const model = string(message.model).trim();
-    if (provider) result.provider = provider;
-    if (model) result.model = model;
+    const messageProvider = string(message.provider).trim();
+    const messageModel = string(message.model).trim();
+    if (messageProvider) provider = messageProvider;
+    if (messageModel) model = messageModel;
 
     const text = textContent(message.content);
     if (text) {
-      result.finalMessage = text;
+      finalMessage = text;
       if (collectMessage) messageTexts.set(messageKey(message), text);
     }
 
@@ -170,13 +168,13 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
     return message;
   };
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
+  const push = (rawLine: string, parsedEvent?: JsonObject | null): void => {
     const line = rawLine.trim();
-    if (!line) continue;
-    const event = parseOmpJsonLine(line);
+    if (!line) return;
+    const event = parsedEvent === undefined ? parseOmpJsonLine(line) : parsedEvent;
     if (!event) {
       recordUnknown(rawLine);
-      continue;
+      return;
     }
 
     const type = string(event.type);
@@ -184,12 +182,12 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
     switch (type) {
       case "session": {
         const id = string(event.id ?? event.sessionId ?? event.session_id).trim();
-        if (id) result.sessionId = id;
+        if (id) sessionId = id;
         break;
       }
       case "session_start": {
         const id = string(event.sessionId ?? event.session_id ?? event.id).trim();
-        if (id) result.sessionId = id;
+        if (id) sessionId = id;
         break;
       }
       case "message_start":
@@ -261,7 +259,7 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
         const id = string(event.toolCallId).trim();
         const name = string(event.toolName).trim();
         if (!id && !name) break;
-        const key = id || `anonymous-${result.toolCalls.length + 1}`;
+        const key = id || `anonymous-${toolCallList.length + 1}`;
         const call: ParsedOmpToolCall = {
           toolCallId: id,
           toolName: name,
@@ -270,7 +268,7 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
           isError: false,
         };
         toolCalls.set(key, call);
-        result.toolCalls.push(call);
+        toolCallList.push(call);
         break;
       }
       case "tool_execution_end": {
@@ -287,8 +285,8 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
             result: resultValue(event.result),
             isError: event.isError === true,
           };
-          toolCalls.set(id || `anonymous-end-${result.toolCalls.length + 1}`, call);
-          result.toolCalls.push(call);
+          toolCalls.set(id || `anonymous-end-${toolCallList.length + 1}`, call);
+          toolCallList.push(call);
         }
         break;
       }
@@ -312,29 +310,45 @@ export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
         handled = false;
     }
     if (!handled) recordUnknown(rawLine);
-  }
-
-  const totals: UsageTotals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, costUsd: 0 };
-  const selectedUsageKeys = turnUsageKeys.size > 0 ? turnUsageKeys : new Set(messageUsage.keys());
-  for (const key of selectedUsageKeys) {
-    const usage = messageUsage.get(key);
-    if (usage) addUsage(totals, usage);
-  }
-  if (selectedUsageKeys.size === 0) {
-    for (const usage of explicitUsage) addUsage(totals, usage);
-  }
-  result.usage = {
-    inputTokens: totals.inputTokens,
-    outputTokens: totals.outputTokens,
-    cachedInputTokens: totals.cachedInputTokens,
   };
-  result.costUsd = totals.costUsd;
-  result.messages = [...messageTexts.values()];
-  result.unknownLines = unknownDropped > 0
-    ? [...unknownKept, `… ${unknownDropped} more unparsed lines (${unknownDroppedBytes} bytes)`]
-    : unknownKept;
-  if (terminalError) result.errors.push(terminalError);
-  return result;
+
+  const result = (): ParsedOmpOutput => {
+    const totals: UsageTotals = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, costUsd: 0 };
+    const selectedUsageKeys = turnUsageKeys.size > 0 ? turnUsageKeys : new Set(messageUsage.keys());
+    for (const key of selectedUsageKeys) {
+      const usage = messageUsage.get(key);
+      if (usage) addUsage(totals, usage);
+    }
+    if (selectedUsageKeys.size === 0) {
+      for (const usage of explicitUsage) addUsage(totals, usage);
+    }
+    return {
+      sessionId,
+      messages: [...messageTexts.values()],
+      finalMessage,
+      errors: terminalError ? [terminalError] : [],
+      provider,
+      model,
+      usage: {
+        inputTokens: totals.inputTokens,
+        outputTokens: totals.outputTokens,
+        cachedInputTokens: totals.cachedInputTokens,
+      },
+      costUsd: totals.costUsd,
+      toolCalls: toolCallList,
+      unknownLines: unknownDropped > 0
+        ? [...unknownKept, `… ${unknownDropped} more unparsed lines (${unknownDroppedBytes} bytes)`]
+        : unknownKept,
+    };
+  };
+
+  return { push, result };
+}
+
+export function parseOmpJsonl(stdout: string): ParsedOmpOutput {
+  const accumulator = createOmpOutputAccumulator();
+  for (const rawLine of stdout.split(/\r?\n/)) accumulator.push(rawLine);
+  return accumulator.result();
 }
 
 export function isOmpUnknownSessionError(stdout: string, stderr: string): boolean {

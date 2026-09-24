@@ -49,7 +49,12 @@ import {
   resolveOmpCommand,
   type PreparedOmpRuntimeConfig,
 } from "./config.js";
-import { isOmpUnknownSessionError, parseOmpJsonl, type ParsedOmpOutput } from "./parse.js";
+import {
+  createOmpOutputAccumulator,
+  isOmpUnknownSessionError,
+  parseOmpJsonLine,
+  type ParsedOmpOutput,
+} from "./parse.js";
 import { classifyOmpFailure } from "./failure.js";
 import { createOmpProgressReporter } from "./progress.js";
 import { ensureOmpSkills } from "./skills.js";
@@ -691,6 +696,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return logQueue;
       };
       const reporter = createOmpProgressReporter(ctx.onRuntimeProgress, ctx.onEvent);
+      const accumulator = createOmpOutputAccumulator();
+      const ingestLine = async (line: string): Promise<void> => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        const event = parseOmpJsonLine(trimmed);
+        accumulator.push(trimmed, event);
+        try {
+          await reporter.ingest(trimmed, event);
+        } catch {
+          reporterFailed = true;
+        }
+      };
       const bufferedOnLog = async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
         if (stream === "stderr") {
           await queueLog(stream, chunk);
@@ -702,11 +719,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           const completeLine = stdoutBuffer.slice(0, newline + 1);
           stdoutBuffer = stdoutBuffer.slice(newline + 1);
           await queueLog("stdout", completeLine);
-          try {
-            await reporter.ingest(completeLine);
-          } catch {
-            reporterFailed = true;
-          }
+          await ingestLine(completeLine);
           newline = stdoutBuffer.indexOf("\n");
         }
       };
@@ -764,7 +777,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ctx.signal.removeEventListener("abort", abortHandler);
         }
       }
-      if (stdoutBuffer) await queueLog("stdout", stdoutBuffer);
+      if (stdoutBuffer) {
+        await queueLog("stdout", stdoutBuffer);
+        await ingestLine(stdoutBuffer);
+      }
       await logQueue;
       try {
         await reporter.flush();
@@ -773,7 +789,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       return {
         proc,
-        parsed: parseOmpJsonl(proc.stdout),
+        parsed: accumulator.result(),
         pendingToolCount: reporter.pendingToolCount(),
         sawProviderWork: reporter.sawProviderWork(),
         reporterFailed,
