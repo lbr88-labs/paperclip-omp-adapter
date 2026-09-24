@@ -177,6 +177,8 @@ if (prompt.includes("BOOTSTRAP_FAIL")) {
 if (!noSession) console.log(JSON.stringify({ type: "session", id: sessionId }));
 console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "fake-call-1", toolName: "bash", args: { command: "true" } }));
 console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "fake-call-1", toolName: "bash", result: { content: [{ type: "text", text: "ok" }] }, isError: false }));
+console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "fake-call-2", toolName: "fabric_exec", args: { code: "return 1;" }, intent: "Inspecting adapter and Paperclip install" }));
+console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "fake-call-2", toolName: "fabric_exec", result: { content: [{ type: "text", text: "ok" }] }, isError: false }));
 const message = {
   id: "fake-message-1",
   role: "assistant",
@@ -458,6 +460,12 @@ assert.ok(toolEvent, "a finished tool call must publish an omp.tool run event");
 assert.equal(toolEvent.stream, "system");
 assert.equal(toolEvent.level, "info");
 assert.match(toolEvent.message, /^bash ok in \d+\.\ds \u2014 true$/);
+const intentEvent = runEvents.find((event) => event.eventType === "omp.tool" && event.message.startsWith("fabric_exec"));
+assert.ok(intentEvent, "a fabric_exec tool call must publish an omp.tool run event");
+assert.match(
+  intentEvent.message,
+  /^fabric_exec ok in \d+\.\ds \u2014 Inspecting adapter and Paperclip install$/,
+);
 
 // Regression test 11: OMP failures map onto Paperclip's retry vocabulary
 const quotaFailure = classifyOmpFailure({

@@ -39,19 +39,18 @@ function assistantText(content: unknown): string {
   return out;
 }
 
-function argumentHint(args: unknown): string {
-  const values = record(args);
-  if (!values) return "";
+function argumentHint(args: unknown, intent: unknown): string {
+  const values = record(args) ?? {};
   const display = record(values.display);
-  const candidate = text(display?.name)
-    || text(values.i)
-    || text(values.cmd)
-    || text(values.command)
-    || text(values.path)
-    || text(values.file_path)
-    || text(values.pattern)
-    || text(values.query);
-  const hint = collapse(candidate);
+  const hint = collapse(text(display?.name))
+    || collapse(text(values.i))
+    || collapse(text(intent))
+    || collapse(text(values.cmd))
+    || collapse(text(values.command))
+    || collapse(text(values.path))
+    || collapse(text(values.file_path))
+    || collapse(text(values.pattern))
+    || collapse(text(values.query));
   return hint.length > HINT_CHARS ? `${hint.slice(0, HINT_CHARS)}…` : hint;
 }
 
@@ -128,7 +127,7 @@ export function createOmpProgressReporter(
         const toolName = text(event.toolName).trim();
         if (!toolName) return;
         const toolCallId = text(event.toolCallId).trim();
-        const hint = argumentHint(event.args);
+        const hint = argumentHint(event.args, event.intent);
         if (toolCallId) pendingTools.set(toolCallId, { toolName, hint, startedMs: Date.now() });
         currentToolName = toolName;
         providerWorkSeen = true;
@@ -142,7 +141,7 @@ export function createOmpProgressReporter(
         if (toolCallId) pendingTools.delete(toolCallId);
         const toolName = text(event.toolName).trim() || started?.toolName || currentToolName || "tool";
         const failed = event.isError === true;
-        const hint = started?.hint ?? argumentHint(event.args);
+        const hint = started?.hint ?? argumentHint(event.args, event.intent);
         const duration = started ? ` in ${seconds(Date.now() - started.startedMs)}` : "";
         currentToolName = null;
         await emit(`Finished ${toolName}`, true);
