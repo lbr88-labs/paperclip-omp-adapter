@@ -80,7 +80,8 @@ export function createOmpProgressReporter(
 
   let lastEmitMs = 0;
   let currentToolName: string | null = null;
-  let lastAssistantSnippet: string | null = null;
+  let snippetKind: "none" | "text" | "thinking" | "final" = "none";
+  let finalSnippet: string | null = null;
   let streamedText = "";
   let streamedThinking = "";
   let thinkingSegment = "";
@@ -90,6 +91,12 @@ export function createOmpProgressReporter(
   let eventsBroken = false;
   let providerWorkSeen = false;
   const pendingTools = new Map<string, { toolName: string; hint: string; startedMs: number }>();
+
+  const snippetValue = (): string | null => {
+    if (snippetKind === "text") return snippetOf(streamedText) || null;
+    if (snippetKind === "thinking") return `Thinking: ${snippetOf(streamedThinking)}`;
+    return finalSnippet;
+  };
 
   const emit = async (message: string, force: boolean): Promise<void> => {
     if (!sink) return;
@@ -101,7 +108,7 @@ export function createOmpProgressReporter(
         phase: "adapter_startup",
         message,
         currentToolName,
-        lastAssistantSnippet,
+        lastAssistantSnippet: snippetValue(),
         lastEventAt: new Date(now),
       });
     } catch {
@@ -157,6 +164,10 @@ export function createOmpProgressReporter(
         if (toolCallId) pendingTools.set(toolCallId, { toolName, hint, startedMs: Date.now() });
         currentToolName = toolName;
         providerWorkSeen = true;
+        if (snippetKind === "text") {
+          finalSnippet = snippetOf(streamedText) || finalSnippet;
+          snippetKind = "final";
+        }
         streamedText = "";
         await flushThinking();
         await emit(`Running ${toolName}`, true);
@@ -187,7 +198,7 @@ export function createOmpProgressReporter(
         if (text(update.type) === "text_delta") {
           await flushThinking();
           streamedText = (streamedText + delta).slice(-SNIPPET_BUFFER_CHARS);
-          lastAssistantSnippet = snippetOf(streamedText);
+          snippetKind = "text";
           await emit("Writing response", false);
           return;
         }
@@ -196,7 +207,7 @@ export function createOmpProgressReporter(
           thinkingSegment = merged.slice(0, THINKING_BUFFER_CHARS);
           if (merged.length > THINKING_BUFFER_CHARS) thinkingDropped = true;
           streamedThinking = (streamedThinking + delta).slice(-SNIPPET_BUFFER_CHARS);
-          lastAssistantSnippet = `Thinking: ${snippetOf(streamedThinking)}`;
+          snippetKind = "thinking";
           await emit("Thinking", false);
         }
         return;
@@ -211,7 +222,8 @@ export function createOmpProgressReporter(
         if (!snippet) return;
         streamedText = body.slice(-SNIPPET_BUFFER_CHARS);
         streamedThinking = "";
-        lastAssistantSnippet = snippet;
+        finalSnippet = snippet;
+        snippetKind = "final";
         await emit("Writing response", true);
         return;
       }
