@@ -56,6 +56,20 @@ To upgrade an existing installation:
 paperclipai adapter reinstall omp_local --json
 ```
 
+For a checkout that survives managed Paperclip updates, install from a maintained
+fork outside the CLI payload store:
+
+```bash
+git clone --branch feat/local-rpc-steering https://github.com/lbr88-labs/paperclip-omp-adapter.git "$HOME/.paperclip/custom-adapters/omp-local"
+npm ci --prefix "$HOME/.paperclip/custom-adapters/omp-local"
+paperclipai adapter install --payload-json "{\"packageName\":\"$HOME/.paperclip/custom-adapters/omp-local\",\"isLocalPath\":true}" --json
+paperclipai service restart
+```
+
+Upgrade the checkout with `git pull --ff-only`, then run `npm ci`, re-register the
+local path, and hot-restart the service. The checkout remains independent of
+the managed Paperclip CLI version.
+
 ### Verification
 
 Check that the adapter is registered and loaded:
