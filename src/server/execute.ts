@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { getSteeringState, runLocalRpc, steer } from "./rpc.js";
 import {
   inferOpenAiCompatibleBiller,
   type AdapterExecutionContext,
@@ -62,6 +63,7 @@ import { ensureOmpSkills } from "./skills.js";
 const CAPABILITY_MANIFEST = {
   bindings: [
     "omp-jsonl",
+    "local-rpc-steering",
     "session-dir-resume",
     "paperclip-workspace-env",
     "paperclip-skills",
@@ -71,9 +73,8 @@ const CAPABILITY_MANIFEST = {
   ],
   limits: [
     "one-process-per-heartbeat",
-    "no-live-steering",
+    "remote-execution-no-steering",
     "no-interactive-dialogs",
-    "no-rpc-transport",
     "schema-driven-ui-only",
     "no-provider-quota-hook",
     "no-remote-session-resume",
@@ -193,7 +194,10 @@ function addWakeEnvironment(
   if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
 }
 
-function buildOmpArgs(input: {
+export { steer, getSteeringState };
+
+export function buildOmpArgs(input: {
+  rpc: boolean;
   config: Record<string, unknown>;
   context?: Record<string, unknown>;
   cwd?: string;
@@ -205,7 +209,7 @@ function buildOmpArgs(input: {
   effectiveProfile: string | null;
 }): string[] {
   const { config } = input;
-  const args = ["--mode", "json", "-p"];
+  const args = input.rpc ? ["--mode", "rpc", "--no-ui"] : ["--mode", "json", "-p"];
   const baseSystemPrompt = asString(config.systemPrompt, "").trim();
   if (baseSystemPrompt) args.push("--system-prompt", baseSystemPrompt);
   args.push("--append-system-prompt", input.systemPrompt);
@@ -300,7 +304,7 @@ function buildOmpArgs(input: {
     }
   }
   args.push(...stringList(config.extraArgs));
-  args.push(input.userPrompt);
+  if (!input.rpc) args.push(input.userPrompt);
   return args;
 }
 
@@ -664,6 +668,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const runAttempt = async (resumeSessionId: string | null): Promise<ProcessAttempt> => {
       const args = buildOmpArgs({
+        rpc: !remote,
         config: executionConfig,
         context,
         cwd,
@@ -679,7 +684,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           adapterType: "omp_local",
           command: resolvedCommand,
           cwd: effectiveExecutionCwd,
-          commandArgs: args.map((value, index) => index === args.length - 1 ? `<prompt ${prompts.userPrompt.length} chars>` : value),
+          commandArgs: remote
+            ? args.map((value, index) => index === args.length - 1 ? `<prompt ${prompts.userPrompt.length} chars>` : value)
+            : args,
           commandNotes,
           env: loggedEnv,
           prompt: prompts.userPrompt,
@@ -749,7 +756,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       };
 
-      if (ctx.signal) {
+      if (remote && ctx.signal) {
         abortHandler = () => triggerProcessAbort();
         if (ctx.signal.aborted) {
           triggerProcessAbort();
@@ -758,20 +765,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
-      await ctx.onCancellationReady?.();
+      if (remote) await ctx.onCancellationReady?.();
 
       let proc;
       try {
-        proc = await runAdapterExecutionTargetProcess(runId, runtimeTarget, command, args, {
-          cwd,
-          env: invocationEnv,
-          timeoutSec,
-          graceSec,
-          onSpawn: handleSpawn,
-          onRuntimeProgress: ctx.onRuntimeProgress,
-          onLog: bufferedOnLog,
-          runLogTail: paperclipBridge?.runLogTail,
-        });
+        proc = remote
+          ? await runAdapterExecutionTargetProcess(runId, runtimeTarget, command, args, {
+              cwd,
+              env: invocationEnv,
+              timeoutSec,
+              graceSec,
+              onSpawn: handleSpawn,
+              onRuntimeProgress: ctx.onRuntimeProgress,
+              onLog: bufferedOnLog,
+              runLogTail: paperclipBridge?.runLogTail,
+            })
+          : await runLocalRpc({
+              runId,
+              command,
+              args,
+              prompt: prompts.userPrompt,
+              cwd,
+              env: invocationEnv,
+              timeoutSec,
+              graceSec,
+              signal: ctx.signal,
+              onSpawn: onSpawn,
+              onCancellationReady: ctx.onCancellationReady,
+              onLog: bufferedOnLog,
+              onSession: async (sessionId) => ingestLine(JSON.stringify({ type: "session", id: sessionId })),
+            });
       } finally {
         if (ctx.signal && abortHandler) {
           ctx.signal.removeEventListener("abort", abortHandler);

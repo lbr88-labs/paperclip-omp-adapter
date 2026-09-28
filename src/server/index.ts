@@ -11,7 +11,7 @@ import {
   type,
 } from "../metadata.js";
 import { detectModel, getConfigSchema, resolveOmpCommand } from "./config.js";
-import { execute } from "./execute.js";
+import { execute, getSteeringState, steer } from "./execute.js";
 import { listOmpModels, refreshOmpModels } from "./models.js";
 import { getOmpQuotaWindows } from "./quota.js";
 import { listOmpSkills, syncOmpSkills } from "./skills.js";
@@ -68,7 +68,7 @@ function getRuntimeCommandSpec(config: Record<string, unknown>): AdapterRuntimeC
   };
 }
 
-export function createServerAdapter(): ServerAdapterModule {
+export function createServerAdapter(): ServerAdapterModule & { steer: typeof steer; getSteeringState: typeof getSteeringState } {
   const advertisedModels = [...models];
   const listModels = async () => {
     const discovered = await listOmpModels();
@@ -91,6 +91,8 @@ export function createServerAdapter(): ServerAdapterModule {
   return {
     type,
     execute,
+    steer,
+    getSteeringState,
     testEnvironment,
     sessionCodec,
     sessionManagement,

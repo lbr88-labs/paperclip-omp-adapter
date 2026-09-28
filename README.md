@@ -1,28 +1,28 @@
 # Paperclip OMP Adapter
 
-[![CI](https://github.com/tickernelz/paperclip-omp-adapter/actions/workflows/ci.yml/badge.svg)](https://github.com/tickernelz/paperclip-omp-adapter/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/%40zhafron%2Fpaperclip-omp-adapter.svg)](https://www.npmjs.com/package/@zhafron/paperclip-omp-adapter)
-[![license](https://img.shields.io/npm/l/%40zhafron%2Fpaperclip-omp-adapter.svg)](LICENSE)
 
 External Paperclip adapter for running Oh My Pi (OMP) CLI in headless mode with native model discovery, custom providers, resumable local sessions, skills synchronization, multi-workspace support, and structured transcripts.
 
 ## Overview
 
-This adapter integrates OMP into Paperclip as an external adapter module (`omp_local`). It communicates with the host Paperclip instance via the `@paperclipai/adapter-utils` contract and parses OMP's non-interactive JSONL event stream into Paperclip transcript entries.
+This adapter integrates OMP into Paperclip as an external adapter module (`omp_local`). Local heartbeat runs use OMP's headless bidirectional RPC JSONL transport; remote targets retain the non-interactive JSONL mode. Agent events stream into Paperclip transcript entries.
 
 ## Feature Matrix
 
 | Feature | Paperclip Integration | OMP CLI Mapping |
 |---|---|---|
 | Model Discovery | Dynamic model list and badge updates | `omp models --json` and `omp models refresh --json` |
-| Execution Mode | Headless execution per heartbeat run | `omp --mode json -p` |
+| Execution Mode | Headless execution per heartbeat run | Local `omp --mode rpc --no-ui`; remote `omp --mode json -p` |
 | Session Resume | Resumes conversation across runs | `--session-dir <dir> --resume <id>` |
 | Multi-Workspace | Multi-workspace context synchronization | `--add-dir <path>` (repeatable) |
 | Thinking / Reasoning | Live transcript streaming plus durable `omp.thinking` run events | `--thinking <level>`, `--print-thoughts` |
 | Tool Events | Real-time tool calls, progress updates, durable `omp.tool` run events | Maps `tool_execution_*` to Paperclip entries |
 | Skills Integration | Paperclip workspace skills synchronization | Links skills into `~/.omp/agent/skills` |
 | Cancellation | Host-driven run abortion | Listens to `ctx.signal` and signals process group |
+| Live Steering | Queue a message into the current local OMP process without restarting it | RPC `steer` response acknowledges acceptance; correlation IDs deduplicate retries |
 | Targets | Local and remote execution | Direct spawn, SSH, or managed sandboxes |
+
+Local steering is available only while the heartbeat's RPC prompt is active. The `getSteeringState(runId)` hook reports availability; `steer({ runId, message, correlationId, onAcknowledged })` acknowledges after OMP accepts the command, and retries of the same correlation ID reuse the accepted response. Remote execution does not support steering. The adapter waits for OMP `session_settled` before closing RPC stdin so background follow-up work remains part of the run. Interrupt still signals the process group as before.
 
 ## Requirements
 
@@ -40,10 +40,14 @@ npm install -g @oh-my-pi/pi-coding-agent@latest
 
 ### Via Paperclip CLI
 
-In a running Paperclip instance, install the adapter using the official package:
+Build and pack this fork, then install the local tarball so Paperclip loads the
+RPC steering hooks instead of the upstream npm release:
 
 ```bash
-paperclipai adapter install --payload-json '{"packageName":"@zhafron/paperclip-omp-adapter","version":"0.2.3"}' --json
+npm ci
+npm run build
+TARBALL=$(npm pack)
+paperclipai adapter install --payload-json "{\"packageName\":\"$PWD/$TARBALL\",\"version\":\"0.7.1\"}" --json
 ```
 
 To upgrade an existing installation:
@@ -93,8 +97,8 @@ The adapter exposes the following configuration schema fields under an agent's a
 - `approvalMode` (select): Tool execution approval policy (`yolo`, `write`, `always-ask`). Default: `yolo`, always passed as `--approval-mode` so the run never depends on `tools.approvalMode` in the OMP config.
 
 ### Diagnostics & Extensions
-- `timeoutSec` (number): Maximum wall-clock execution time in seconds before SIGINT. Default: `43200` (12 hours).
-- `graceSec` (number): Grace period before SIGKILL after SIGINT. Default: `20`.
+- `timeoutSec` (number): Maximum wall-clock execution time in seconds before termination. Default: `43200` (12 hours).
+- `graceSec` (number): Grace period before SIGKILL after the timeout signal. Default: `20`.
 - `configFiles` (textarea): Custom `config.yml` overlay paths.
 - `extensions` (textarea): Paths to custom OMP extensions.
 - `pluginDirs` (textarea): Paths to plugin directories.
@@ -106,7 +110,7 @@ The adapter exposes the following configuration schema fields under an agent's a
 ### Building and Testing
 
 ```bash
-git clone https://github.com/tickernelz/paperclip-omp-adapter.git
+git clone https://github.com/lbr88-labs/paperclip-omp-adapter.git
 cd paperclip-omp-adapter
 npm install
 npm run typecheck
@@ -119,7 +123,7 @@ Pack the local repository and install the tarball directly into your Paperclip i
 
 ```bash
 TARBALL=$(npm pack)
-paperclipai adapter install --payload-json "{\"packageName\":\"$PWD/$TARBALL\",\"version\":\"0.2.3\"}" --json
+paperclipai adapter install --payload-json "{\"packageName\":\"$PWD/$TARBALL\",\"version\":\"0.7.1\"}" --json
 ```
 
 ## License
