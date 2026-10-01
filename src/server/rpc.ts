@@ -50,7 +50,17 @@ function request(run: LiveRun, id: string, command: RpcFrame): Promise<RpcFrame>
 }
 
 async function acknowledge(record: SteerRecord, onAcknowledged?: () => Promise<void>): Promise<{ turnId: string }> {
-  await record.accepted;
+  let deadline: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      record.accepted,
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(steeringError("steering_timeout", "OMP did not acknowledge the steering command within 10 seconds.")), 10_000);
+      }),
+    ]);
+  } finally {
+    if (deadline) clearTimeout(deadline);
+  }
   // The host may commit its acknowledgement after this callback returns. Invoke it
   // again on a duplicate even if an earlier callback succeeded but that commit failed.
   await onAcknowledged?.();
@@ -86,9 +96,12 @@ export async function steer(input: SteeringInput): Promise<{ turnId: string }> {
   try {
     return await acknowledge(record, input.onAcknowledged);
   } catch (error) {
-    // A failed RPC command is safe to retry; a successful command is never sent twice,
-    // even if the host's durable acknowledgement callback fails.
-    try { await record.accepted; } catch { run.records.delete(input.correlationId); }
+    // Only an explicit rejection is safe to resend. A deadline leaves acceptance
+    // ambiguous, so retain its correlation record and continue listening for a reply.
+    if (!record.acceptedByOmp && (error as { code?: string }).code === "steering_rejected"
+        && run.records.get(input.correlationId) === record) {
+      run.records.delete(input.correlationId);
+    }
     throw error;
   }
 }
@@ -162,10 +175,8 @@ export async function runLocalRpc(input: {
     }
     run.pending.clear();
     stop("SIGTERM");
-    if (input.graceSec > 0) {
-      killTimer = setTimeout(() => stop("SIGKILL"), input.graceSec * 1000);
-      killTimer.unref();
-    }
+    killTimer = setTimeout(() => stop("SIGKILL"), Math.max(1, input.graceSec) * 1000);
+    killTimer.unref();
   }, input.timeoutSec * 1000) : undefined;
   timeout?.unref();
   let killTimer: NodeJS.Timeout | undefined;

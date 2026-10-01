@@ -47,7 +47,7 @@
     "build": "tsc",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node test/smoke.mjs",
+    "test": "npm run build && node test/smoke.mjs && node --test test/rpc.test.mjs",
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
