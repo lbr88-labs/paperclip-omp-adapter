@@ -16,7 +16,7 @@ jobs:
   validate:
     permissions:
       contents: read
-    uses: $/.github/workflows/validate.yml
+    uses: ./.github/workflows/validate.yml # zizmor: ignore[self-repository] -- GitHub local reusable workflows require ./ syntax.
 
   publish:
     name: Publish release
