@@ -8,6 +8,7 @@ import { prepareOmpRuntimeConfig } from "../dist/server/config.js";
 import {
   applyPreparedOmpAgentEnvironment,
   applyRuntimeToolAccess,
+  buildOmpArgs,
   rewriteRemoteConfigPaths,
 } from "../dist/server/execute.js";
 import { classifyOmpFailure } from "../dist/server/failure.js";
@@ -167,6 +168,80 @@ if (args[0] === "usage") {
   console.log(JSON.stringify({ generatedAt: 1, reports: [{ provider: "fake-provider", fetchedAt: 1, limits: [{ id: "5h", label: "Five hour", scope: {}, window: { id: "5h", label: "5 Hour", resetsAt: 1789800000000 }, amount: { used: 25, limit: 100, unit: "percent" }, status: "ok", notes: ["sample"] }] }], accountsWithoutUsage: [], disabledCredentials: [] }));
   process.exit(0);
 }
+if (args.includes("rpc")) {
+  const resumeAt = args.indexOf("--resume");
+  const sessionId = resumeAt >= 0 ? args[resumeAt + 1] : "fake-session-1";
+  const readline = (await import("node:readline")).createInterface({ input: process.stdin });
+  const emit = (event) => console.log(JSON.stringify(event));
+  emit({ type: "ready", protocolVersion: 1 });
+  emit({ type: "available_commands_update", commands: [] });
+  let activePrompt = null;
+  let steered = "";
+  let steerCount = 0;
+  const finish = (prompt) => {
+    const text = prompt + (steered ? "|STEER=" + steered : "") +
+      "|OMP_PROFILE=" + (process.env.OMP_PROFILE ?? "") +
+      "|PI_PROFILE=" + (process.env.PI_PROFILE ?? "") +
+      "|AGENT_DIR=" + (process.env.PI_CODING_AGENT_DIR ?? "") +
+      "|PAPERCLIP_API_KEY=" + (process.env.PAPERCLIP_API_KEY ? "set" : "");
+    if (prompt.includes("ABRUPT_THINKING")) {
+      emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "last thought before the process stops" } });
+      process.exit(0);
+    }
+    if (prompt.includes("HUGE_LOG")) {
+      const early = { role: "assistant", provider: "fake-provider", model: "fake-model", content: [{ type: "text", text: "early" }], stopReason: "stop", usage: { input: 7, output: 3, cacheRead: 1, cost: { total: 0.002 } } };
+      emit({ type: "turn_end", message: early });
+      emit({ type: "tool_execution_start", toolCallId: "huge-call-1", toolName: "bash", args: { command: "true" } });
+      emit({ type: "tool_execution_end", toolCallId: "huge-call-1", toolName: "bash", result: { content: [] }, isError: false });
+      const filler = "f".repeat(4000);
+      for (let index = 0; index < 1400; index += 1) emit({ type: "notice", text: filler + index });
+      if (prompt.includes("HUGE_LOG_ABORT")) {
+        emit({ type: "notice", text: "ABORT_MARKER" });
+        return;
+      }
+      const late = { role: "assistant", provider: "fake-provider", model: "fake-model", content: [{ type: "text", text: "HUGE_LOG_DONE" }], stopReason: "stop", usage: { input: 100, output: 20, cacheRead: 5, cost: { total: 0.01 } } };
+      emit({ type: "message_end", message: late });
+      emit({ type: "turn_end", message: late });
+    } else {
+      for (let thought = 0; thought < 12; thought += 1) emit({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "step " + thought + " weighing the adapter contract against the durable run events panel; " } });
+      emit({ type: "tool_execution_start", toolCallId: "fake-call-1", toolName: "bash", args: { command: "true" } });
+      emit({ type: "tool_execution_end", toolCallId: "fake-call-1", toolName: "bash", result: { content: [{ type: "text", text: "ok" }] }, isError: false });
+      emit({ type: "tool_execution_start", toolCallId: "fake-call-2", toolName: "fabric_exec", args: { code: "return 1;" }, intent: "Inspecting adapter and Paperclip install" });
+      emit({ type: "tool_execution_end", toolCallId: "fake-call-2", toolName: "fabric_exec", result: { content: [{ type: "text", text: "ok" }] }, isError: false });
+      const message = { role: "assistant", provider: "fake-provider", model: "fake-model", content: [{ type: "text", text }], stopReason: "stop", usage: { input: 100, output: 20, cacheRead: 5, cost: { total: 0.01 } } };
+      emit({ type: "message_end", message });
+      emit({ type: "turn_end", message });
+    }
+    emit({ type: "prompt_result", id: activePrompt, agentInvoked: true, status: "completed", sessionSettled: true });
+    emit({ type: "session_settled" });
+  };
+  for await (const line of readline) {
+    const command = JSON.parse(line);
+    if (command.type === "get_state") {
+      emit({ type: "response", id: command.id, command: "get_state", success: true, data: { sessionId, isSettled: true } });
+    } else if (command.type === "prompt") {
+      activePrompt = command.id;
+      emit({ type: "response", id: command.id, command: "prompt", success: true, data: { agentInvoked: true } });
+      if (command.message.includes("BOOTSTRAP_FAIL")) {
+        process.stderr.write("omp: provider overloaded, please try again in 30 seconds\\n");
+        process.exit(1);
+      }
+      if (!command.message.includes("STEER_HOLD")) setTimeout(() => finish(command.message), 0);
+      else globalThis.heldPrompt = command.message;
+    } else if (command.type === "steer") {
+      if (command.message === "REJECT_ME") {
+        emit({ type: "response", id: command.id, command: "steer", success: false, error: "Steering rejected by OMP" });
+      } else {
+        steerCount += 1;
+        steered = command.message;
+        emit({ type: "response", id: command.id, command: "steer", success: true });
+        if (process.env.FAKE_STEER_LOG) nodeFs.appendFileSync(process.env.FAKE_STEER_LOG, process.pid + ":" + steerCount + ":" + steered + "\\n");
+        if (globalThis.heldPrompt) setTimeout(() => finish(globalThis.heldPrompt), 30);
+      }
+    }
+  }
+  process.exit(0);
+}
 const resumeIndex = args.indexOf("--resume");
 const noSession = args.includes("--no-session");
 const sessionId = resumeIndex >= 0 ? args[resumeIndex + 1] : "fake-session-1";
@@ -310,6 +385,10 @@ assert.equal(fresh.sessionId, "fake-session-1");
 assert.match(fresh.summary ?? "", /FRESH_OK/);
 assert.deepEqual(fresh.usage, { inputTokens: 100, outputTokens: 20, cachedInputTokens: 5 });
 assert.equal(fresh.usageBasis, "per_run");
+assert.deepEqual(metas.at(-1).commandArgs.slice(0, 3), ["--mode", "rpc", "--no-ui"]);
+assert(!metas.at(-1).commandArgs.includes("-p"));
+assert(!metas.at(-1).commandArgs.some((arg) => arg.includes("FRESH_OK")),
+  "the initial prompt must be sent through RPC stdin, not command arguments");
 
 const resumed = await run(
   "00000000-0000-4000-8000-000000000012",
@@ -772,6 +851,88 @@ assert.deepEqual(hugeAborted.executionRecovery, {
   actionOutcomes: "settled",
 });
 assert.deepEqual(hugeAborted.resultJson.executionCancellation, { state: "acknowledged" });
+
+const steerLog = path.join(root, "rpc-steer.log");
+const previousSteerLog = process.env.FAKE_STEER_LOG;
+process.env.FAKE_STEER_LOG = steerLog;
+const waitForSteering = async (runId) => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (adapter.getSteeringState(runId) === "available") return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail("OMP RPC prompt never became steerable");
+};
+try {
+  const steerRunId = "00000000-0000-4000-8000-00000000001b";
+  assert.equal(adapter.getSteeringState(steerRunId), "temporarily_unavailable");
+  const steerLogs = [];
+  const running = adapter.execute({
+    runId: steerRunId, agent, runtime: emptyRuntime, config: { ...baseConfig, noSession: true },
+    context: { expected: "STEER_HOLD" },
+    onLog: async (stream, chunk) => { if (stream === "stdout") steerLogs.push(chunk); },
+  });
+  await waitForSteering(steerRunId);
+  let acknowledged = 0;
+  const steerInput = { runId: steerRunId, message: "change course", correlationId: "comment-42" };
+  await assert.rejects(
+    () => adapter.steer({ ...steerInput, onAcknowledged: async () => { throw new Error("durable acknowledgement failed"); } }),
+    /durable acknowledgement failed/,
+  );
+  const firstAck = await adapter.steer({ ...steerInput, onAcknowledged: async () => { acknowledged += 1; } });
+  const repeatedAck = await adapter.steer({ ...steerInput, onAcknowledged: async () => { acknowledged += 1; } });
+  assert.deepEqual(repeatedAck, firstAck);
+  assert.equal(acknowledged, 2, "a host retry must replay its durable acknowledgement callback");
+  const steeredResult = await running;
+  assert.equal(steeredResult.exitCode, 0, steeredResult.errorMessage);
+  assert.match(steeredResult.summary, /STEER=change course/);
+  assert.equal(steeredResult.usage.outputTokens, 20);
+  assert.equal(adapter.getSteeringState(steerRunId), "temporarily_unavailable");
+  assert.equal(await fs.readFile(steerLog, "utf8").then((text) => text.trim().split("\n").length), 1);
+  assert(!steerLogs.some((line) => /"type":"response"|"type":"ready"|"type":"prompt_result"/.test(line)),
+    "RPC control frames must not enter transcript logs");
+  assert.deepEqual(await adapter.steer({ ...steerInput, onAcknowledged: async () => { acknowledged += 1; } }), firstAck);
+  assert.equal(acknowledged, 3, "a post-settle host retry must reconcile without another RPC write");
+  await assert.rejects(
+    () => adapter.steer({ ...steerInput, message: "different message" }),
+    (error) => error.code === "steering_rejected",
+  );
+
+  const rejectedRunId = "00000000-0000-4000-8000-00000000001c";
+  const rejectedRunning = adapter.execute({
+    runId: rejectedRunId, agent, runtime: emptyRuntime, config: { ...baseConfig, noSession: true },
+    context: { expected: "STEER_HOLD" }, onLog: async () => {},
+  });
+  await waitForSteering(rejectedRunId);
+  let rejectedAck = 0;
+  await assert.rejects(
+    () => adapter.steer({
+      runId: rejectedRunId, message: "REJECT_ME", correlationId: "comment-43",
+      onAcknowledged: async () => { rejectedAck += 1; },
+    }),
+    (error) => error.code === "steering_rejected",
+  );
+  assert.equal(rejectedAck, 0);
+  assert.equal(adapter.getSteeringState(rejectedRunId), "available", "rejected steer must not terminate the prompt");
+  await adapter.steer({ runId: rejectedRunId, message: "accepted", correlationId: "comment-43" });
+  assert.match((await rejectedRunning).summary, /STEER=accepted/);
+  assert.equal((await fs.readFile(steerLog, "utf8")).trim().split("\n").length, 2);
+
+  const remoteArgs = buildOmpArgs({
+    rpc: false, config: { noSession: true }, systemPrompt: "contract", userPrompt: "REMOTE_PROMPT",
+    sessionDir: "/unused", resumeSessionId: null, omitProfile: true, effectiveProfile: null,
+  });
+  assert.deepEqual(remoteArgs.slice(0, 3), ["--mode", "json", "-p"]);
+  assert.equal(remoteArgs.at(-1), "REMOTE_PROMPT");
+  assert(!remoteArgs.includes("--no-ui"));
+  assert.equal(adapter.getSteeringState("remote-run-with-no-local-rpc-process"), "temporarily_unavailable");
+  await assert.rejects(
+    () => adapter.steer({ runId: "remote-run-with-no-local-rpc-process", message: "cannot steer remote", correlationId: "remote-1" }),
+    (error) => error.code === "steering_temporarily_unavailable",
+  );
+} finally {
+  if (previousSteerLog === undefined) delete process.env.FAKE_STEER_LOG;
+  else process.env.FAKE_STEER_LOG = previousSteerLog;
+}
 
 await fs.rm(root, { recursive: true, force: true });
 console.log("adapter smoke passed");

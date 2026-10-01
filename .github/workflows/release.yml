@@ -16,26 +16,28 @@ jobs:
   validate:
     permissions:
       contents: read
-    uses: ./.github/workflows/validate.yml
+    uses: ./.github/workflows/validate.yml # zizmor: ignore[self-repository] -- GitHub local reusable workflows require ./ syntax.
 
   publish:
+    name: Publish release
     needs: validate
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      id-token: write
+      contents: write # Create the GitHub release.
+      id-token: write # Sign npm provenance with GitHub OIDC.
     steps:
       - name: Check out exact tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+          package-manager-cache: false
           registry-url: https://registry.npmjs.org
-          cache: npm
 
       - name: Preflight tag and package versions
         id: preflight

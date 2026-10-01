@@ -1,6 +1,6 @@
 {
   "name": "@zhafron/paperclip-omp-adapter",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "External Paperclip adapter for the Oh My Pi coding-agent CLI",
   "type": "module",
   "license": "MIT",
@@ -15,11 +15,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tickernelz/paperclip-omp-adapter.git"
+    "url": "git+https://github.com/lbr88-labs/paperclip-omp-adapter.git"
   },
-  "homepage": "https://github.com/tickernelz/paperclip-omp-adapter#readme",
+  "homepage": "https://github.com/lbr88-labs/paperclip-omp-adapter#readme",
   "bugs": {
-    "url": "https://github.com/tickernelz/paperclip-omp-adapter/issues"
+    "url": "https://github.com/lbr88-labs/paperclip-omp-adapter/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -47,7 +47,7 @@
     "build": "tsc",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node test/smoke.mjs",
+    "test": "npm run build && node test/smoke.mjs && node --test test/rpc.test.mjs",
     "pack:check": "npm pack --dry-run"
   },
   "dependencies": {
